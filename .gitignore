@@ -1,0 +1,7 @@
+build/
+bink/
+payload/
+*.exe
+*.res
+__pycache__/
+*.pyc
