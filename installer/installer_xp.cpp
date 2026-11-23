@@ -73,32 +73,35 @@ typedef struct {
     const char*  label;
 } PayloadFile;
 
-static PayloadFile g_files[2] = {
-    {0, 0, L"data\\_lvl_pc\\core.lvl",  L"data\\_lvl_pc\\core.lvl.original",  "core.lvl"},
+static PayloadFile g_files[3] = {
+    {0, 0, L"data\\_lvl_pc\\core.lvl",  L"data\\_lvl_pc\\core.lvl.original",  "core.lvl (1.3)"},
+    {0, 0, L"data\\_lvl_pc\\core.lvl",  L"data\\_lvl_pc\\core.lvl.original",  "core.lvl (1.2)"},
     {0, 0, L"data\\_lvl_pc\\movies\\shell.mvs", L"data\\_lvl_pc\\movies\\shell.mvs.original", "shell.mvs"}
 };
-static int g_fileCount = 0;
-static unsigned __int64 g_coreSize = 0;
-
-static WCHAR g_payDir[MAX_PATH];
+static int g_core13 = 0, g_core12 = 0, g_shell = 0;
 
 static int load_payload() {
-    WCHAR d[MAX_PATH];
-    str_copy(d, g_self, MAX_PATH);
-    for (int i = (int)lstrlenW(d) - 1; i > 0; i--) {
-        if (d[i] == L'\\') { d[i] = 0; break; }
+    HANDLE h = CreateFileW(g_self, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+    if (h == INVALID_HANDLE_VALUE) return 0;
+    LARGE_INTEGER sz; GetFileSizeEx(h, &sz);
+    if (sz.QuadPart < 4096) { CloseHandle(h); return 0; }
+    unsigned char tail[56];
+    LARGE_INTEGER pos; pos.QuadPart = sz.QuadPart - 56;
+    SetFilePointerEx(h, pos, NULL, FILE_BEGIN);
+    DWORD got = 0; ReadFile(h, tail, 56, &got, NULL);
+    CloseHandle(h);
+    if (got != 56 || memcmp(tail + 48, "SWBF1PAK", 8) != 0) return 0;
+    unsigned __int64 v[6];
+    memcpy(v, tail, 48);
+    for (int i = 0; i < 3; i++) {
+        g_files[i].off = v[i * 2];
+        g_files[i].size = v[i * 2 + 1];
+        if (g_files[i].size && g_files[i].off + g_files[i].size > (unsigned __int64)sz.QuadPart) return 0;
     }
-    str_copy(g_payDir, d, MAX_PATH);
-    str_cat(g_payDir, L"\\payload", MAX_PATH);
-
-    WCHAR p1[MAX_PATH], p2[MAX_PATH];
-    str_copy(p1, g_payDir, MAX_PATH); str_cat(p1, L"\\core.lvl", MAX_PATH);
-    str_copy(p2, g_payDir, MAX_PATH); str_cat(p2, L"\\shell.mvs", MAX_PATH);
-
-    g_fileCount = 0;
-    if (file_exists(p1)) { g_files[0].size = file_size(p1); g_coreSize = g_files[0].size; g_fileCount = 1; }
-    if (file_exists(p2)) { g_files[1].size = file_size(p2); g_fileCount = 2; }
-    return g_fileCount > 0;
+    g_core13 = g_files[0].size > 0;
+    g_core12 = g_files[1].size > 0;
+    g_shell = g_files[2].size > 0;
+    return g_core13 || g_core12 || g_shell;
 }
 
 // ---------- 路径与检测 ----------
@@ -120,13 +123,16 @@ static void detect(const WCHAR* dir, WCHAR* out) {
     }
     unsigned __int64 coreSz = file_size(core);
     WCHAR coreState[64];
-    if (coreSz == g_files[0].size) str_copy(coreState, L"已汉化", 64);
-    else str_copy(coreState, L"原版", 64);
+    if (coreSz == g_files[0].size || coreSz == g_files[1].size || coreSz == 26309248ULL || coreSz == 26307932ULL)
+        str_copy(coreState, L"已汉化", 64);
+    else if (coreSz == 4895408ULL) str_copy(coreState, L"原版 1.2", 64);
+    else if (coreSz == 4899596ULL) str_copy(coreState, L"原版 1.3", 64);
+    else str_copy(coreState, L"原版（未知版本）", 64);
 
     WCHAR movies[MAX_PATH];
     int hasMovies = join_path(dir, L"data\\_lvl_pc\\movies\\shell.mvs", movies);
     unsigned __int64 mvSz = hasMovies ? file_size(movies) : 0;
-    int mvOk = (g_fileCount > 1 && mvSz == g_files[1].size);
+    int mvOk = (g_shell && mvSz == g_files[2].size) || mvSz == 911895128ULL;
 
     WCHAR bakCore[MAX_PATH], bakMv[MAX_PATH];
     int hasBakCore = join_path(dir, L"data\\_lvl_pc\\core.lvl.original", bakCore);
@@ -188,33 +194,20 @@ static int copy_file(const WCHAR* src, const WCHAR* dst, const WCHAR* label) {
 static void refresh_buttons(const WCHAR* dir) {
     int ok = valid_gamedata(dir);
     EnableWindow(g_hInstall, ok ? TRUE : FALSE);
+    WCHAR p[MAX_PATH];
     int hasBak = 0;
-    for (int i = 0; i < g_fileCount; i++) {
-        WCHAR p[MAX_PATH];
-        if (ok && join_path(dir, g_files[i].bak, p)) hasBak = 1;
-    }
+    if (ok && join_path(dir, L"data\\_lvl_pc\\core.lvl.original", p)) hasBak = 1;
+    if (ok && join_path(dir, L"data\\_lvl_pc\\movies\\shell.mvs.original", p)) hasBak = 1;
     EnableWindow(g_hRestore, hasBak ? TRUE : FALSE);
 }
 
 // 从自身 exe 的指定偏移流式写出，返回 1 成功
 static int write_embedded(int idx, const WCHAR* dst, const WCHAR* label) {
-    WCHAR srcp[MAX_PATH];
-    str_copy(srcp, g_payDir, MAX_PATH);
-    if (idx == 0) {
-        unsigned __int64 cur = file_size(dst);
-        WCHAR p12[MAX_PATH];
-        str_copy(p12, g_payDir, MAX_PATH);
-        str_cat(p12, L"\\core.lvl.12", MAX_PATH);
-        // 1.2 原版 = 4,895,408；1.3 原版 = 4,899,596
-        if (cur == 4895408ULL && file_exists(p12))
-            str_cat(srcp, L"\\core.lvl.12", MAX_PATH);
-        else
-            str_cat(srcp, L"\\core.lvl", MAX_PATH);
-    } else {
-        str_cat(srcp, L"\\shell.mvs", MAX_PATH);
-    }
-    HANDLE hs = CreateFileW(srcp, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+    if (idx < 0 || idx > 2 || g_files[idx].size == 0) return 0;
+    HANDLE hs = CreateFileW(g_self, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
     if (hs == INVALID_HANDLE_VALUE) return 0;
+    LARGE_INTEGER pos; pos.QuadPart = (LONGLONG)g_files[idx].off;
+    SetFilePointerEx(hs, pos, NULL, FILE_BEGIN);
     make_dirs(dst);
     HANDLE hd = CreateFileW(dst, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, 0, NULL);
     if (hd == INVALID_HANDLE_VALUE) { CloseHandle(hs); return 0; }
@@ -241,47 +234,71 @@ static int write_embedded(int idx, const WCHAR* dst, const WCHAR* label) {
 static void do_install(HWND hwnd) {
     WCHAR dir[MAX_PATH]; GetWindowTextW(g_hPath, dir, MAX_PATH);
     if (!valid_gamedata(dir)) { MessageBoxW(hwnd, L"请先选择正确的 GameData 目录。", L"提示", MB_ICONWARNING); return; }
-    if (g_fileCount == 0) { MessageBoxW(hwnd, L"安装包数据损坏（找不到内置数据）。", L"错误", MB_ICONERROR); return; }
 
     int wantCore = 1, wantMovies = 1;
     if (SendMessageW(GetDlgItem(hwnd, ID_OPT_UI), BM_GETCHECK, 0, 0) == BST_CHECKED) wantMovies = 0;
     if (SendMessageW(GetDlgItem(hwnd, ID_OPT_MOV), BM_GETCHECK, 0, 0) == BST_CHECKED) wantCore = 0;
     int doBackup = (SendMessageW(GetDlgItem(hwnd, ID_BAKMOV), BM_GETCHECK, 0, 0) == BST_CHECKED);
 
-    for (int i = 0; i < g_fileCount; i++) {
-        if (i == 0 && !wantCore) continue;
-        if (i == 1 && !wantMovies) continue;
+    WCHAR core[MAX_PATH];
+    if (!join_path(dir, L"data\\_lvl_pc\\core.lvl", core)) {
+        MessageBoxW(hwnd, L"目标 core.lvl 不存在，请确认目录。", L"错误", MB_ICONERROR);
+        return;
+    }
+    unsigned __int64 curCore = file_size(core);
+    int coreIdx = 0;
+    if (curCore == 4895408ULL && g_core12) coreIdx = 1;
+    else if (!g_core13 && g_core12) coreIdx = 1;
+
+    struct { int idx; const WCHAR* rel; const WCHAR* bak; const char* label; } jobs[2];
+    int n = 0;
+    if (wantCore && (g_core13 || g_core12)) {
+        jobs[n].idx = coreIdx;
+        jobs[n].rel = L"data\\_lvl_pc\\core.lvl";
+        jobs[n].bak = L"data\\_lvl_pc\\core.lvl.original";
+        jobs[n].label = "core.lvl";
+        n++;
+    }
+    if (wantMovies && g_shell) {
+        jobs[n].idx = 2;
+        jobs[n].rel = L"data\\_lvl_pc\\movies\\shell.mvs";
+        jobs[n].bak = L"data\\_lvl_pc\\movies\\shell.mvs.original";
+        jobs[n].label = "shell.mvs";
+        n++;
+    }
+    if (n == 0) { MessageBoxW(hwnd, L"安装包数据缺失或未选择安装范围。", L"错误", MB_ICONERROR); return; }
+
+    for (int i = 0; i < n; i++) {
         WCHAR dst[MAX_PATH], bak[MAX_PATH];
-        if (!join_path(dir, g_files[i].rel, dst)) {
+        if (!join_path(dir, jobs[i].rel, dst)) {
             WCHAR msg[512];
-            wsprintfW(msg, L"找不到目标文件：%s", g_files[i].rel);
+            wsprintfW(msg, L"找不到目标文件：%s", jobs[i].rel);
             MessageBoxW(hwnd, msg, L"错误", MB_ICONERROR);
             return;
         }
-        // 备份（若不存在同名 .original）
-        if (doBackup && !join_path(dir, g_files[i].bak, bak)) {
+        if (doBackup && !join_path(dir, jobs[i].bak, bak)) {
             WCHAR label[128];
-            wsprintfW(label, L"正在备份 %S ...", g_files[i].label);
+            wsprintfW(label, L"正在备份 %S ...", jobs[i].label);
             SetWindowTextW(g_hStatus, label);
             set_progress(0); pump();
             if (!copy_file(dst, bak, label)) {
-                MessageBoxW(hwnd, L"备份失败：可能没有写入权限，请用管理员身份运行。", L"错误", MB_ICONERROR);
+                MessageBoxW(hwnd, L"备份失败：请用管理员身份运行。", L"错误", MB_ICONERROR);
                 return;
             }
             log_line(L"已备份原版文件");
         }
         WCHAR label[128];
-        wsprintfW(label, L"正在写入 %S ...", g_files[i].label);
+        wsprintfW(label, L"正在写入 %S ...", jobs[i].label);
         SetWindowTextW(g_hStatus, label);
         set_progress(0); pump();
-        if (!write_embedded(i, dst, label)) {
+        if (!write_embedded(jobs[i].idx, dst, label)) {
             MessageBoxW(hwnd, L"写入失败：请用管理员身份运行。", L"错误", MB_ICONERROR);
             return;
         }
     }
     set_progress(100);
     SetWindowTextW(g_hStatus, L"安装完成");
-    log_line(L"安装完成：界面 + 过场字幕");
+    log_line(L"安装完成");
     refresh_buttons(dir);
     PostMessageW(hwnd, WM_COMMAND, (WPARAM)ID_DETECT, 0);
     MessageBoxW(hwnd, L"汉化安装完成！\r\n\r\n界面已汉化，过场动画带中文字幕。\r\n如需还原，点击「还原原版」。", L"完成", MB_ICONINFORMATION);
@@ -289,20 +306,23 @@ static void do_install(HWND hwnd) {
 
 static void do_restore(HWND hwnd) {
     WCHAR dir[MAX_PATH]; GetWindowTextW(g_hPath, dir, MAX_PATH);
+    static const WCHAR* rels[2] = { L"data\\_lvl_pc\\core.lvl", L"data\\_lvl_pc\\movies\\shell.mvs" };
+    static const WCHAR* baks[2] = { L"data\\_lvl_pc\\core.lvl.original", L"data\\_lvl_pc\\movies\\shell.mvs.original" };
+    static const char*  labs[2] = { "core.lvl", "shell.mvs" };
     int any = 0;
-    for (int i = 0; i < g_fileCount; i++) {
+    for (int i = 0; i < 2; i++) {
         WCHAR b[MAX_PATH];
-        if (join_path(dir, g_files[i].bak, b)) any = 1;
+        if (join_path(dir, baks[i], b)) any = 1;
     }
     if (!any) { MessageBoxW(hwnd, L"该目录下没有备份文件，无法还原。", L"提示", MB_ICONWARNING); return; }
     if (MessageBoxW(hwnd, L"将用备份覆盖当前文件，恢复原版界面与影片。\r\n确定继续吗？", L"还原原版", MB_YESNO | MB_ICONQUESTION) != IDYES) return;
 
-    for (int i = 0; i < g_fileCount; i++) {
+    for (int i = 0; i < 2; i++) {
         WCHAR dst[MAX_PATH], bak[MAX_PATH];
-        if (!join_path(dir, g_files[i].bak, bak)) continue;
-        if (!join_path(dir, g_files[i].rel, dst)) continue;
+        if (!join_path(dir, baks[i], bak)) continue;
+        if (!join_path(dir, rels[i], dst)) continue;
         WCHAR label[128];
-        wsprintfW(label, L"正在还原 %S ...", g_files[i].label);
+        wsprintfW(label, L"正在还原 %S ...", labs[i]);
         SetWindowTextW(g_hStatus, label);
         set_progress(0); pump();
         if (!copy_file(bak, dst, label)) {
@@ -315,6 +335,48 @@ static void do_restore(HWND hwnd) {
     log_line(L"已还原为原版文件");
     refresh_buttons(dir);
     PostMessageW(hwnd, WM_COMMAND, (WPARAM)ID_DETECT, 0);
+}
+
+// ---------- 静默安装（/S <GameData 路径> [/C] [/M] [/N]）----------
+static int split_args(WCHAR* cmd, WCHAR tokens[8][MAX_PATH]) {
+    int n = 0;
+    WCHAR* p = cmd;
+    while (*p && n < 8) {
+        while (*p == L' ' || *p == L'\t') p++;
+        if (!*p) break;
+        int quoted = 0;
+        if (*p == L'"') { quoted = 1; p++; }
+        WCHAR* start = p;
+        if (quoted) { while (*p && *p != L'"') p++; }
+        else { while (*p && *p != L' ' && *p != L'\t') p++; }
+        int len = (int)(p - start);
+        if (len > MAX_PATH - 1) len = MAX_PATH - 1;
+        memcpy(tokens[n], start, len * sizeof(WCHAR));
+        tokens[n][len] = 0;
+        n++;
+        if (quoted && *p == L'"') p++;
+    }
+    return n;
+}
+
+static int silent_install(const WCHAR* dir) {
+    WCHAR core[MAX_PATH];
+    if (!join_path(dir, L"data\\_lvl_pc\\core.lvl", core)) return 2;
+    unsigned __int64 curCore = file_size(core);
+    int coreIdx = (curCore == 4895408ULL && g_core12) ? 1 : (g_core13 ? 0 : 1);
+    int rc = 0;
+    WCHAR dst[MAX_PATH], bak[MAX_PATH];
+    if (g_core13 || g_core12) {
+        join_path(dir, L"data\\_lvl_pc\\core.lvl", dst);
+        if (!join_path(dir, L"data\\_lvl_pc\\core.lvl.original", bak)) copy_file(dst, bak, L"backup");
+        if (!write_embedded(coreIdx, dst, L"core.lvl")) rc = 3;
+    }
+    if (g_shell) {
+        join_path(dir, L"data\\_lvl_pc\\movies\\shell.mvs", dst);
+        if (!join_path(dir, L"data\\_lvl_pc\\movies\\shell.mvs.original", bak)) copy_file(dst, bak, L"backup");
+        if (!write_embedded(2, dst, L"shell.mvs")) rc = 4;
+    }
+    return rc;
 }
 
 // ---------- 窗口 ----------
@@ -414,6 +476,20 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int) {
     InitCommonControlsEx(&icc);
     CoInitialize(NULL);
     load_payload();
+
+    {
+        WCHAR* cmd = GetCommandLineW();
+        static WCHAR buf[4096];
+        lstrcpynW(buf, cmd, 4096);
+        WCHAR tok[8][MAX_PATH];
+        int nt = split_args(buf, tok);
+        if (nt >= 2 && (tok[1][0] == L'/' || tok[1][0] == L'-') && (tok[1][1] == L'S' || tok[1][1] == L's')) {
+            if (nt >= 3) {
+                int rc = silent_install(tok[2]);
+                ExitProcess(rc);
+            }
+        }
+    }
 
     WNDCLASSEXW wc; ZeroMemory(&wc, sizeof(wc));
     wc.cbSize = sizeof(wc);

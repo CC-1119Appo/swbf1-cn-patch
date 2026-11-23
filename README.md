@@ -14,6 +14,35 @@ Star Wars: Battlefront (2004) Simplified Chinese Patch
 | 术语 | 参照 19352 条星战中英对照表统一译名 |
 | 安装器 | Win32 图形安装器，支持备份/还原、安装范围选择，兼容 XP SP3+ |
 
+## 截图
+
+![安装器](screenshots/installer.png)
+
+![字幕示例](screenshots/subtitle_sample.png)
+
+## 下载与安装（单文件）
+
+到 Releases 下载 `SWBF1_汉化包_v1.0.exe`（约 920 MB，与《前线2》汉化包相同的单文件形式）。
+
+1. 双击运行，程序会自动搜索游戏目录；
+2. 没找到就点「浏览…」选择 `...\Star Wars - Battlefront\GameData`；
+3. 点「检测版本」确认版本与状态；
+4. 选择安装范围（完整 / 仅界面 / 仅字幕），点「开始安装」。
+
+安装前默认备份原版：
+
+```text
+data/_lvl_pc/core.lvl          -> core.lvl.original
+data/_lvl_pc/movies/shell.mvs  -> shell.mvs.original
+```
+
+### 静默安装（可选）
+
+```bat
+SWBF1_汉化包_v1.0.exe /S "E:\GOG Games\Star Wars - Battlefront\GameData"
+```
+
+返回值：0 成功；2 找不到目标；3 写 core 失败；4 写 shell.mvs 失败。
 ## 安装
 
 1. 到 Releases 下载安装包并解压；
